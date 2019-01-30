@@ -1,0 +1,33 @@
+#!/bin/bash
+
+NUM_WORKERS=`grep replicas worker-deployment.yaml | perl -ne 'm@: (\d+)@ && print "$1\n"'`
+echo "$NUM_WORKERS workers found in worker-deployment.yaml"
+
+echo "deleting existing deployment..."
+kubectl delete deployment.apps/worker
+kubectl delete deployment.apps/master
+kubectl delete deployment.apps/manager
+kubectl delete service/master
+kubectl delete pvc/manager-claim0
+
+echo "starting new deployment..."
+kubectl create -f master-service.yaml
+kubectl create -f manager-deployment.yaml
+kubectl create -f manager-claim0-persistentvolumeclaim.yaml
+kubectl create -f master-deployment.yaml
+kubectl create -f worker-deployment.yaml
+
+echo "waiting for new deployment to complete..."
+while [ 1 ]; do w=`kubectl get pods | egrep -c 'worker.+Running'`; if [ $w = $NUM_WORKERS ]; then break; fi; echo "$w kubernetes containers running, waiting for $NUM_WORKERS... "; sleep 3   ; done
+echo "all $NUM_WORKERS kubernetes containers running."
+
+MASTER=`printf "%s\n" \`kubectl get pod -o jsonpath="{..metadata.name}"\`|grep master`
+MANAGER=`printf "%s\n" \`kubectl get pod -o jsonpath="{..metadata.name}"\`|grep manager`
+WORKERS=`printf "%s\n" \`kubectl get pod -o jsonpath="{..metadata.name}" \`|grep worker|xargs echo`
+WORKER_IPS=`kubectl get pod -o wide | grep worker- | awk '{print $6}'`
+
+echo "master=$MASTER, manager=$MANAGER, workers=$WORKERS"
+
+for w in $WORKER_IPS; do kubectl exec -it $MASTER -- su - postgres -c "psql -c \"SELECT * from master_add_node('$w', 5432);\""; done
+
+
