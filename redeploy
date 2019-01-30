@@ -26,8 +26,9 @@ MANAGER=`printf "%s\n" \`kubectl get pod -o jsonpath="{..metadata.name}"\`|grep 
 WORKERS=`printf "%s\n" \`kubectl get pod -o jsonpath="{..metadata.name}" \`|grep worker|xargs echo`
 WORKER_IPS=`kubectl get pod -o wide | grep worker- | awk '{print $6}'`
 
-echo "master=$MASTER, manager=$MANAGER, workers=$WORKERS"
+echo "master=$MASTER, manager=$MANAGER, workers=$WORKERS; waiting for postgres startup"
+sleep 5  # hack
 
-for w in $WORKER_IPS; do kubectl exec -it $MASTER -- su - postgres -c "psql -c \"SELECT * from master_add_node('$w', 5432);\""; done
+for w in $WORKER_IPS; do kubectl exec -it $MASTER -- su - postgres -c "psql -c \"SELECT * from master_add_node('$w', 5432);\""|head; done
 
-
+kubectl exec -it $MASTER -- su - postgres -c "psql" < citus-test.sql
