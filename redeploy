@@ -28,13 +28,21 @@ echo "all $NUM_WORKERS kubernetes containers running."
 MASTER=`printf "%s\n" \`kubectl get pod -o jsonpath="{..metadata.name}"\`|grep master`
 MANAGER=`printf "%s\n" \`kubectl get pod -o jsonpath="{..metadata.name}"\`|grep manager`
 WORKERS=`printf "%s\n" \`kubectl get pod -o jsonpath="{..metadata.name}" \`|grep worker|xargs echo`
+FIRST_WORKER=`printf "%s\n" \`kubectl get pod -o jsonpath="{..metadata.name}" \`|grep worker|head -1|xargs echo`
 WORKER_IPS=`kubectl get pod -o wide | grep worker- | awk '{print $6}'`
 
 echo "master=$MASTER, manager=$MANAGER, workers=$WORKERS; waiting for postgres startup"
-sleep 5  # hack
 
-kubectl exec -it $MASTER -- su - postgres -c "psql -c \"SELECT num, street, city, state, zip FROM parse_address('1 Devonshire Place PH301, Boston, MA 02109');\""
+echo "waiting for postgres startup..."
+while [ 1 ]; do w=`for w in $WORKERS; do kubectl exec -it $w -- su - postgres -c "pg_isready"; done | grep accepting | wc -l`; if [ $w = $NUM_WORKERS ]; then break; fi; echo "$w kubernetes postgres servers running, waiting for $NUM_WORKERS... "; sleep 2; done
+
+echo "waiting for postgres extension initialization startup (slow due to postgis)..."
+while [ 1 ]; do w=`for w in $WORKERS; do kubectl exec -it $w -- su - postgres -c "psql -t -c \"select count(*) from pg_extension where extname like '%postgis%' or extname = 'citus';\""; done | grep -c 5`; if [ $w = $NUM_WORKERS ]; then break; fi; echo "$w kubernetes postgres servers running, waiting for $NUM_WORKERS... "; sleep 2; done
 
 for w in $WORKER_IPS; do kubectl exec -it $MASTER -- su - postgres -c "psql -c \"SELECT * from master_add_node('$w', 5432);\""|head; done
 
+# test postgis
+kubectl exec -it $MASTER -- su - postgres -c "psql -c \"SELECT num, street, city, state, zip FROM parse_address('1 Devonshire Place PH301, Boston, MA 02109');\""
+
+# test citus
 kubectl exec -it $MASTER -- su - postgres -c "psql" < citus-test.sql
