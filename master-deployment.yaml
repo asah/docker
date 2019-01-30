@@ -19,7 +19,7 @@ spec:
         io.kompose.service: master
     spec:
       containers:
-      - image: citusdata/citus:8.1.1
+      - image: citus811-postgis25-pg11   # for citus-only: citusdata/citus:8.1.1
         name: citus-master
         ports:
         - containerPort: 5432
