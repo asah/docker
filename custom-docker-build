@@ -1,0 +1,15 @@
+#!/bin/bash
+
+if [ $# -ne 1 ]; then
+  echo 1>&2 "Usage: $0 <docker tag, e.g. asah/citusdata_citus:8.1.1-debian-orig>"
+  exit 1
+fi
+
+TAG=$1
+
+sudo docker build . -t $TAG
+sudo docker push $TAG
+sed -i "s@image: .*@image: $TAG@" worker-deployment.yaml
+sed -i "s@image: .*@image: $TAG@" master-deployment.yaml
+
+echo "docker build successful and *-deployment.yaml updated - now run ./redeploy to launch"
