@@ -13,10 +13,7 @@ LABEL maintainer="Citus Data https://citusdata.com" \
 ENV CITUS_VERSION ${VERSION}.citus-1
 ARG DEBIAN_FRONTEND=noninteractive
 
-#
 # install postgis
-#
-# it's unclear why, but this must happen before Citus - in the other order, postgis fails to load
 # PG_MAJOR from postgres docker base
 ARG POSTGIS_MAJOR=2.5
 ENV LANG en_ZA.UTF-8
@@ -34,9 +31,7 @@ RUN apt-get update \
     && dpkg-reconfigure locales \
     && rm -rf /var/lib/apt/lists/*
 
-#
 # install Citus
-#
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        ca-certificates \
