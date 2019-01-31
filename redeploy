@@ -53,6 +53,10 @@ for w in $WORKER_IPS; do kubectl exec -it $MASTER -- su - postgres -c "psql $DBN
 kubectl exec -it $MASTER -- su - postgres -c "psql -c \"select run_command_on_workers('create database $DBNAME');\" "
 kubectl exec -it $MASTER -- su - postgres -c "psql $DBNAME -c \"select run_command_on_workers('$EXT_CMD');\" "
 
+echo "waiting for postgres extension initialization startup (slow due to postgis)..."
+while [ 1 ]; do w=`for w in $WORKERS; do kubectl exec -it $w -- su - postgres -c "psql $DBNAME -t -c \"select count(*) from pg_extension where extname like '%postgis%' or extname = 'citus';\""; done | grep -c 5`; if [ $w = $NUM_WORKERS ]; then break; fi; echo "$w kubernetes postgres servers running, waiting for $NUM_WORKERS... "; sleep 2; done
+
+
 # test postgis
 kubectl exec -it $MASTER -- su - postgres -c "psql $DBNAME -t -c \"SELECT num, street, city, state, zip FROM parse_address('1 Devonshire Place PH301, Boston, MA 02109');\""
 kubectl exec -it $MASTER -- su - postgres -c "psql -c \"select run_command_on_workers(\\\$cmd\\\$ SELECT concat_ws(' - ', num, street, city, state, zip) FROM parse_address('1 Devonshire Place PH301, Boston, MA 02109') \\\$cmd\\\$);\""
