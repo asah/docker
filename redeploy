@@ -1,5 +1,7 @@
 #!/bin/bash
 
+DBNAME=kyrix  # change to whatever you want
+
 # Google GCP note: to run, you must first create a kubernetes cluster with plenty of RAM - we use n1-standard-2 (7.5GB)
 
 NUM_WORKERS=`grep replicas worker-deployment.yaml | perl -ne 'm@: (\d+)@ && print "$1\n"'`
@@ -41,8 +43,20 @@ while [ 1 ]; do w=`for w in $WORKERS; do kubectl exec -it $w -- su - postgres -c
 
 for w in $WORKER_IPS; do kubectl exec -it $MASTER -- su - postgres -c "psql -c \"SELECT * from master_add_node('$w', 5432);\""|head; done
 
+# setup user database
+echo "setting up user database $DBNAME (slow because of create extension postgis)"
+kubectl exec -it $MASTER -- su - postgres -c "psql -c \"create database $DBNAME;\" "
+EXT_CMD='create extension if not exists citus; create extension if not exists postgis; create extension if not exists postgis_topology; create extension if not exists postgis_sfcgal; create extension if not exists fuzzystrmatch; create extension if not exists address_standardizer; create extension if not exists address_standardizer_data_us; create extension if not exists postgis_tiger_geocoder';
+kubectl exec -it $MASTER -- su - postgres -c "psql $DBNAME -c \"$EXT_CMD\" "
+
+for w in $WORKER_IPS; do kubectl exec -it $MASTER -- su - postgres -c "psql $DBNAME -c \"SELECT * from master_add_node('$w', 5432);\""|grep 5432; done
+kubectl exec -it $MASTER -- su - postgres -c "psql -c \"select run_command_on_workers('create database $DBNAME');\" "
+kubectl exec -it $MASTER -- su - postgres -c "psql $DBNAME -c \"select run_command_on_workers('$EXT_CMD');\" "
+
 # test postgis
-kubectl exec -it $MASTER -- su - postgres -c "psql -c \"SELECT num, street, city, state, zip FROM parse_address('1 Devonshire Place PH301, Boston, MA 02109');\""
+kubectl exec -it $MASTER -- su - postgres -c "psql $DBNAME -t -c \"SELECT num, street, city, state, zip FROM parse_address('1 Devonshire Place PH301, Boston, MA 02109');\""
+kubectl exec -it $MASTER -- su - postgres -c "psql -c \"select run_command_on_workers(\\\$cmd\\\$ SELECT concat_ws(' - ', num, street, city, state, zip) FROM parse_address('1 Devonshire Place PH301, Boston, MA 02109') \\\$cmd\\\$);\""
 
 # test citus
-kubectl exec -it $MASTER -- su - postgres -c "psql" < citus-test.sql
+kubectl exec -it $MASTER -- su - postgres -c "psql $DBNAME" < citus-test.sql
+
