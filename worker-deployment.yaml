@@ -19,7 +19,7 @@ spec:
         io.kompose.service: worker
     spec:
       containers:
-      - image: asah/citusdata_citus_postgis:citus811-postgis25-pg11   # for citus-only: citusdata/citus:8.1.1
+      - image: asah/pg11_postgis25_citus811:1.0   # for citus-only: citusdata/citus:8.1.1
         name: worker
         resources: {}
       restartPolicy: Always
