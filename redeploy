@@ -38,6 +38,9 @@ echo "master=$MASTER, manager=$MANAGER, workers=$WORKERS; waiting for postgres s
 echo "waiting for postgres startup..."
 while [ 1 ]; do w=`for w in $WORKERS; do kubectl exec -it $w -- su - postgres -c "pg_isready"; done | grep accepting | wc -l`; if [ $w = $NUM_WORKERS ]; then break; fi; echo "$w kubernetes postgres servers running, waiting for $NUM_WORKERS... "; sleep 2; done
 
+echo "waiting for postgres extension initialization startup (slow due to postgis)..."
+while [ 1 ]; do w=`for w in $WORKERS; do kubectl exec -it $w -- su - postgres -c "psql -t -c \"select count(*) from pg_extension where extname = 'citus';\""; done | grep -c 1`; if [ $w = $NUM_WORKERS ]; then break; fi; echo "$w postgres servers initialized with citus, waiting for $NUM_WORKERS... "; sleep 2; done
+
 for w in $WORKER_IPS; do kubectl exec -it $MASTER -- su - postgres -c "psql -c \"SELECT * from master_add_node('$w', 5432);\""|head; done
 
 # setup user database
@@ -51,7 +54,8 @@ kubectl exec -it $MASTER -- su - postgres -c "psql -c \"select run_command_on_wo
 kubectl exec -it $MASTER -- su - postgres -c "psql $DBNAME -c \"select run_command_on_workers('$EXT_CMD');\" "
 
 echo "waiting for postgres extension initialization startup (slow due to postgis)..."
-while [ 1 ]; do w=`for w in $WORKERS; do kubectl exec -it $w -- su - postgres -c "psql $DBNAME -t -c \"select count(*) from pg_extension where extname like '%postgis%' or extname = 'citus';\""; done | grep -c 1`; if [ $w = $NUM_WORKERS ]; then break; fi; echo "$w kubernetes postgres servers running, waiting for $NUM_WORKERS... "; sleep 2; done
+while [ 1 ]; do w=`for w in $WORKERS; do kubectl exec -it $w -- su - postgres -c "psql $DBNAME -t -c \"select count(*) from pg_extension where extname like '%postgis%';\""; done | grep -c 4`; if [ $w = $NUM_WORKERS ]; then break; fi; echo "$w postgres servers initialized with postgis, waiting for $NUM_WORKERS... "; sleep 2; done
+
 
 # test postgis on master
 kubectl exec -it $MASTER -- su - postgres -c "psql $DBNAME -t -c \"SELECT num, street, city, state, zip FROM parse_address('1 Devonshire Place PH301, Boston, MA 02109');\""

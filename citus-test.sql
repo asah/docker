@@ -58,16 +58,8 @@ CREATE TABLE rTowns (
 select create_reference_table('rtowns');
 \copy rtowns from 'towns.csv';
 
--- run a query that requires postgis on the worker nodes
--- if postgis isn't working, you'll get parse_address doesn't exist
-create table test_for_postgis(i bigint, s text);
-select create_reference_table('test_for_postgis');
-insert into test_for_postgis values (1000, '1 Devonshire Place PH301, Boston, MA 02109');
-select * from dtowns where id = (select (a).num::bigint from (select parse_address(s) as a from test_for_postgis ) as foo)::bigint;
-
 -- should be slow
 select min(id::text||code||article||name||department) from ltowns;
 select min(id::text||code||article||name||department) from rtowns;
 -- should be fast
 select min(id::text||code||article||name||department) from dtowns;
-
