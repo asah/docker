@@ -58,8 +58,21 @@ CREATE TABLE rTowns (
 select create_reference_table('rtowns');
 \copy rtowns from 'towns.csv';
 
--- should be slow
+
+-- postgis + citus tables
+DROP TABLE IF EXISTS dtest_postgis_addr;
+CREATE TABLE dtest_postgis_addr (i SERIAL, s TEXT);
+select create_distributed_table('dtest_postgis_addr', 'i');
+insert into dtest_postgis_addr (i,s) values (1, '1 Devonshire Place PH301, Boston, MA 02109');
+DROP TABLE IF EXISTS rtest_postgis_addr;
+CREATE TABLE rtest_postgis_addr (i SERIAL, s TEXT);
+select create_reference_table('rtest_postgis_addr');
+insert into rtest_postgis_addr (i,s) values (1, '1 Devonshire Place PH301, Boston, MA 02109');
+
+explain select min(id::text||code||article||name||department) from dtowns join dtest_postgis_addr on id=i and (parse_address(s)).num::int = 1;
+
+-- first two should be slow, last should be 3-5x faster
 select min(id::text||code||article||name||department) from ltowns;
 select min(id::text||code||article||name||department) from rtowns;
--- should be fast
 select min(id::text||code||article||name||department) from dtowns;
+
