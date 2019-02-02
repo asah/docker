@@ -69,7 +69,8 @@ CREATE TABLE rtest_postgis_addr (i SERIAL, s TEXT);
 select create_reference_table('rtest_postgis_addr');
 insert into rtest_postgis_addr (i,s) values (1, '1 Devonshire Place PH301, Boston, MA 02109');
 
-explain select min(id::text||code||article||name||department) from dtowns join dtest_postgis_addr on id=i and (parse_address(s)).num::int = 1;
+-- run a query that requires a postgis function (parse_address) on the worker nodes
+select min(id::text||code||article||name||department) from dtowns join dtest_postgis_addr on id=i and (parse_address(s)).num::int = 1;
 
 -- first two should be slow, last should be 3-5x faster
 select min(id::text||code||article||name||department) from ltowns;

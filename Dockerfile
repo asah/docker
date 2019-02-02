@@ -44,7 +44,12 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # add citus to default PostgreSQL config
-RUN echo "shared_preload_libraries='citus'" >> /usr/share/postgresql/postgresql.conf.sample
+RUN echo "shared_preload_libraries='citus'" >> /usr/share/postgresql/postgresql.conf.sample && \
+    echo "logging_collector = on" >> /usr/share/postgresql/postgresql.conf.sample && \
+    echo "log_directory = 'log'" >> /usr/share/postgresql/postgresql.conf.sample && \
+    echo "log_filename = 'postgresql-%Y-%m-%d_%H%M%S.log'" >> /usr/share/postgresql/postgresql.conf.sample && \
+    echo "log_file_mode = 0600" >> /usr/share/postgresql/postgresql.conf.sample && \
+    echo "" > /dev/null
 
 # add scripts to run after initdb
 # note: 002-create-postgis-extension.sql should only be run in user databases, as per postgis instructions
