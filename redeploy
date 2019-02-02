@@ -34,8 +34,20 @@ WORKERS=`printf "%s\n" \`kubectl get pod -o jsonpath="{..metadata.name}" \`|grep
 FIRST_WORKER=`printf "%s\n" \`kubectl get pod -o jsonpath="{..metadata.name}" \`|grep worker|head -1|xargs echo`
 WORKER_IPS=`kubectl get pod -o wide | grep worker- | awk '{print $6}'`
 RS_MASTER=`printf "%s\n" \`kubectl get replicasets -o jsonpath="{..metadata.name}"\`|grep master`
+POD_INTERNAL_SUBNET=`kubectl get pods -o wide | grep worker|head -1|perl -ne 'm@\s+(\d+[.]\d+)[.]\d+[.]\d+\s+@ && print "$1.0.0/16"' `
 
 echo "exposing bastion early - it take minutes to allocate an external IP"
+# important: citus installs on Docker startup and opens all forms of connection to being passwordless,
+# which is super dangerous with the k8s bastion which then opens it to the whole internet !
+# Instead, lock down postgres trusted-login to just the internal subnet of the k8s pod used by citus.
+kubectl exec $MASTER -- su - postgres -c "psql -c \"SET password_encryption = 'scram-sha-256';alter user postgres with password 'kyrixftw'\""
+# restrict everywhere to password access
+kubectl exec $MASTER -- sed -i 's@host all all all trust@host all all all scram-sha-256@' /var/lib/postgresql/data/pg_hba.conf
+# HACK: hardcoded to /16 networks, as used by Google Cloud
+# allow citus to communicate without passwords
+kubectl exec $MASTER -- bash -c "echo \"host all all $POD_INTERNAL_SUBNET trust\" >> /var/lib/postgresql/data/pg_hba.conf"
+kubectl exec $MASTER -- cat /var/lib/postgresql/data/pg_hba.conf | egrep '^(host|local)'
+kubectl exec $MASTER -- su - postgres -c "/usr/lib/postgresql/11/bin/pg_ctl -D /var/lib/postgresql/data reload -s"
 kubectl expose replicaset.apps/$RS_MASTER --type=LoadBalancer --name=bastion
 
 echo "master=$MASTER, manager=$MANAGER, workers=$WORKERS; waiting for postgres startup"
@@ -49,18 +61,18 @@ while [ 1 ]; do w=`for w in $WORKERS; do kubectl exec -it $w -- su - postgres -c
 for w in $WORKER_IPS; do kubectl exec -it $MASTER -- su - postgres -c "psql -t -c \"SELECT * from master_add_node('$w', 5432);\""; done|head
 
 # setup user database
-echo "setting up user database $DBNAME (slow because of create extension postgis)"
+echo "setting up user database $DBNAME (slow because of postgis initialization)"
 kubectl exec -it $MASTER -- su - postgres -c "psql -c \"create database $DBNAME;\" "
 EXT_CMD='create extension if not exists citus; create extension if not exists postgis; create extension if not exists postgis_topology; create extension if not exists postgis_sfcgal; create extension if not exists fuzzystrmatch; create extension if not exists address_standardizer; create extension if not exists address_standardizer_data_us; create extension if not exists postgis_tiger_geocoder';
 kubectl exec -it $MASTER -- su - postgres -c "psql $DBNAME -c \"$EXT_CMD\" "
 
 for w in $WORKER_IPS; do kubectl exec -it $MASTER -- su - postgres -c "psql $DBNAME -t -c \"SELECT * from master_add_node('$w', 5432);\""|grep 5432; done
-kubectl exec -it $MASTER -- su - postgres -c "psql -t -c \"select run_command_on_workers('create database $DBNAME');\" "
-kubectl exec -it $MASTER -- su - postgres -c "psql $DBNAME -t -c \"select run_command_on_workers('$EXT_CMD');\" "
-
+kubectl exec -it $MASTER -- su - postgres -c "psql -c \"select run_command_on_workers('create database $DBNAME');\" "
+# easier than run_command_on_workers()
+for w in $WORKERS; do kubectl exec -t $w -- su - postgres -c "psql $DBNAME -t -c \"$EXT_CMD\""  > /dev/null 2> /dev/null & done; wait
+stty sane  # HARMLESS HACK: for some reason the EXT_CMD corrupts the TTY on my Mac iTerm2
 echo "waiting for postgres extension initialization startup (slow due to postgis)..."
 while [ 1 ]; do w=`for w in $WORKERS; do kubectl exec -it $w -- su - postgres -c "psql $DBNAME -t -c \"select count(*) from pg_extension where extname like '%postgis%';\""; done | grep -c 4`; if [ $w = $NUM_WORKERS ]; then break; fi; echo "$w postgres servers initialized with postgis, waiting for $NUM_WORKERS... "; sleep 2; done
-
 
 # test postgis on master
 kubectl exec -it $MASTER -- su - postgres -c "psql $DBNAME -t -c \"SELECT num, street, city, state, zip FROM parse_address('1 Devonshire Place PH301, Boston, MA 02109');\""
@@ -68,8 +80,8 @@ kubectl exec -it $MASTER -- su - postgres -c "psql $DBNAME -t -c \"SELECT num, s
 # test citus
 kubectl exec -it $MASTER -- su - postgres -c "psql $DBNAME" < citus-test.sql
 
-echo "waiting for postgres extension initialization startup (slow due to postgis)..."
+echo "waiting for k8s bastion startup (slow because of external IP allocation)..."
 while [ 1 ]; do ip=`kubectl get service/bastion -o wide |grep bastion | awk '{print $4}'`; if [ $ip != '<pending>' ]; then break; fi; echo "waiting for external IP... "; sleep 2; done
-
 BASTION_IP=$ip
-echo "bastion live: run psql -h $BASTION_IP kyrix to connect (requires password)"
+BASTION_INTERNAL_IP=`kubectl get service/bastion -o wide |grep bastion | awk '{print $3}'`
+echo "bastion live: run psql -h $BASTION_IP -U postgres kyrix to connect (requires password)"
