@@ -1,6 +1,7 @@
 #!/bin/bash
 
 DBNAME=kyrix  # change to whatever you want
+POSTGRES_PASSWORD=kyrixftw
 
 # Google GCP note: to run, you must first create a kubernetes cluster with plenty of RAM - we use n1-standard-2 (7.5GB)
 
@@ -36,11 +37,24 @@ WORKER_IPS=`kubectl get pod -o wide | grep worker- | awk '{print $6}'`
 RS_MASTER=`printf "%s\n" \`kubectl get replicasets -o jsonpath="{..metadata.name}"\`|grep master`
 POD_INTERNAL_SUBNET=`kubectl get pods -o wide | grep worker|head -1|perl -ne 'm@\s+(\d+[.]\d+)[.]\d+[.]\d+\s+@ && print "$1.0.0/16"' `
 
+echo "master=$MASTER, manager=$MANAGER, workers=$WORKERS; waiting for postgres startup"
+
+echo "waiting for postgres startup..."
+while [ 1 ]; do w=`for w in $WORKERS; do kubectl exec -it $w -- su - postgres -c "pg_isready"; done | grep accepting | wc -l`; if [ $w = $NUM_WORKERS ]; then break; fi; echo "$w kubernetes postgres servers running, waiting for $NUM_WORKERS... "; sleep 2; done
+
+echo "waiting for citus initialization..."
+while [ 1 ]; do w=`for w in $WORKERS; do kubectl exec -it $w -- su - postgres -c "psql -t -c \"select count(*) from pg_extension where extname = 'citus';\""; done | grep -c 1`; if [ $w = $NUM_WORKERS ]; then break; fi; echo "$w postgres servers initialized with citus, waiting for $NUM_WORKERS... "; sleep 2; done
+
+for w in $WORKER_IPS; do kubectl exec -it $MASTER -- su - postgres -c "psql -t -c \"SELECT * from master_add_node('$w', 5432);\""; done|head
+kubectl exec -it $MASTER -- su - postgres -c "psql -c \"select run_command_on_workers('create database $DBNAME');\" "
+
 echo "exposing bastion early - it take minutes to allocate an external IP"
 # important: citus installs on Docker startup and opens all forms of connection to being passwordless,
 # which is super dangerous with the k8s bastion which then opens it to the whole internet !
 # Instead, lock down postgres trusted-login to just the internal subnet of the k8s pod used by citus.
-kubectl exec $MASTER -- su - postgres -c "psql -c \"SET password_encryption = 'scram-sha-256';alter user postgres with password 'kyrixftw'\""
+# note: because of this, we have to wait until citus initializes...
+kubectl exec $MASTER -- su - postgres -c "psql -c \"create extension citus\" "
+kubectl exec $MASTER -- su - postgres -c "psql -c \"SET password_encryption = 'scram-sha-256';alter user postgres with password '$POSTGRES_PASSWORD'\""
 # restrict everywhere to password access
 kubectl exec $MASTER -- sed -i 's@host all all all trust@host all all all scram-sha-256@' /var/lib/postgresql/data/pg_hba.conf
 # HACK: hardcoded to /16 networks, as used by Google Cloud
@@ -50,29 +64,15 @@ kubectl exec $MASTER -- cat /var/lib/postgresql/data/pg_hba.conf | egrep '^(host
 kubectl exec $MASTER -- su - postgres -c "/usr/lib/postgresql/11/bin/pg_ctl -D /var/lib/postgresql/data reload -s"
 kubectl expose replicaset.apps/$RS_MASTER --type=LoadBalancer --name=bastion
 
-echo "master=$MASTER, manager=$MANAGER, workers=$WORKERS; waiting for postgres startup"
-
-echo "waiting for postgres startup..."
-while [ 1 ]; do w=`for w in $WORKERS; do kubectl exec -it $w -- su - postgres -c "pg_isready"; done | grep accepting | wc -l`; if [ $w = $NUM_WORKERS ]; then break; fi; echo "$w kubernetes postgres servers running, waiting for $NUM_WORKERS... "; sleep 2; done
-
-echo "waiting for postgres extension initialization startup (slow due to postgis)..."
-while [ 1 ]; do w=`for w in $WORKERS; do kubectl exec -it $w -- su - postgres -c "psql -t -c \"select count(*) from pg_extension where extname = 'citus';\""; done | grep -c 1`; if [ $w = $NUM_WORKERS ]; then break; fi; echo "$w postgres servers initialized with citus, waiting for $NUM_WORKERS... "; sleep 2; done
-
-for w in $WORKER_IPS; do kubectl exec -it $MASTER -- su - postgres -c "psql -t -c \"SELECT * from master_add_node('$w', 5432);\""; done|head
-
 # setup user database
 echo "setting up user database $DBNAME (slow because of postgis initialization)"
 kubectl exec -it $MASTER -- su - postgres -c "psql -c \"create database $DBNAME;\" "
 EXT_CMD='create extension if not exists citus; create extension if not exists postgis; create extension if not exists postgis_topology; create extension if not exists postgis_sfcgal; create extension if not exists fuzzystrmatch; create extension if not exists address_standardizer; create extension if not exists address_standardizer_data_us; create extension if not exists postgis_tiger_geocoder';
-kubectl exec -it $MASTER -- su - postgres -c "psql $DBNAME -c \"$EXT_CMD\" "
-
-for w in $WORKER_IPS; do kubectl exec -it $MASTER -- su - postgres -c "psql $DBNAME -t -c \"SELECT * from master_add_node('$w', 5432);\""|grep 5432; done
-kubectl exec -it $MASTER -- su - postgres -c "psql -c \"select run_command_on_workers('create database $DBNAME');\" "
-# easier than run_command_on_workers()
-for w in $WORKERS; do kubectl exec -t $w -- su - postgres -c "psql $DBNAME -t -c \"$EXT_CMD\""  > /dev/null 2> /dev/null & done; wait
-stty sane  # HARMLESS HACK: for some reason the EXT_CMD corrupts the TTY on my Mac iTerm2
+kubectl exec -it $MASTER -- su - postgres -c "psql $DBNAME -c \"$EXT_CMD\" "; stty sane  # HARMLESS HACK: for some reason the EXT_CMD corrupts the TTY on my Mac iTerm2
+# run_command_on_workers() doesn't seem to run properly within a database?
+for w in $WORKERS; do kubectl exec -t $w -- su - postgres -c "psql $DBNAME -t -c \"$EXT_CMD\""  > /dev/null 2> /dev/null & done;
 echo "waiting for postgres extension initialization startup (slow due to postgis)..."
-while [ 1 ]; do w=`for w in $WORKERS; do kubectl exec -it $w -- su - postgres -c "psql $DBNAME -t -c \"select count(*) from pg_extension where extname like '%postgis%';\""; done | grep -c 4`; if [ $w = $NUM_WORKERS ]; then break; fi; echo "$w postgres servers initialized with postgis, waiting for $NUM_WORKERS... "; sleep 2; done
+while [ 1 ]; do w=`for w in $WORKERS; do stty sane; kubectl exec -it $w -- su - postgres -c "psql $DBNAME -t -c \"select count(*) from pg_extension where extname like '%postgis%';\""; done | grep -c 4`; if [ $w = $NUM_WORKERS ]; then break; fi; echo "$w postgres servers initialized with postgis, waiting for $NUM_WORKERS... "; sleep 2; done
 
 # test postgis on master
 kubectl exec -it $MASTER -- su - postgres -c "psql $DBNAME -t -c \"SELECT num, street, city, state, zip FROM parse_address('1 Devonshire Place PH301, Boston, MA 02109');\""
