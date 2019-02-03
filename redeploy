@@ -34,13 +34,8 @@ echo "waiting for new deployment to complete..."
 while [ 1 ]; do w=`kubectl get pods | egrep -c 'worker.+Running'`; if [ $w = $NUM_WORKERS ]; then break; fi; echo "$w kubernetes containers running, waiting for $NUM_WORKERS... "; sleep 3   ; done
 echo "all $NUM_WORKERS kubernetes containers running."
 
-MASTER=`printf "%s\n" \`kubectl get pod -o jsonpath="{..metadata.name}"\`|grep master`
-MANAGER=`printf "%s\n" \`kubectl get pod -o jsonpath="{..metadata.name}"\`|grep manager`
-WORKERS=`printf "%s\n" \`kubectl get pod -o jsonpath="{..metadata.name}" \`|grep worker|xargs echo`
-FIRST_WORKER=`printf "%s\n" \`kubectl get pod -o jsonpath="{..metadata.name}" \`|grep worker|head -1|xargs echo`
-WORKER_IPS=`kubectl get pod -o wide | grep worker- | awk '{print $6}'`
-RS_MASTER=`printf "%s\n" \`kubectl get replicasets -o jsonpath="{..metadata.name}"\`|grep master`
-POD_INTERNAL_SUBNET=`kubectl get pods -o wide | grep worker|head -1|perl -ne 'm@\s+(\d+[.]\d+)[.]\d+[.]\d+\s+@ && print "$1.0.0/16"' `
+# setup vars early, even before bastion is ready.
+source ./setup-shell-vars.sh
 
 echo "master=$MASTER, manager=$MANAGER, workers=$WORKERS"
 
@@ -89,6 +84,13 @@ kubectl exec -it $MASTER -- su - postgres -c "psql $DBNAME" < citus-test.sql
 
 echo "waiting for k8s bastion startup (slow because of external IP allocation)..."
 while [ 1 ]; do ip=`kubectl get service/bastion -o wide |grep bastion | awk '{print $4}'`; if [ $ip != '<pending>' ]; then break; fi; echo "waiting for external IP... "; sleep 2; done
-BASTION_IP=$ip
-BASTION_INTERNAL_IP=`kubectl get service/bastion -o wide |grep bastion | awk '{print $3}'`
-echo "bastion live: run psql -h $BASTION_IP -U $USERNAME $DBNAME to connect (requires password)"
+
+# setup vars again, noow that bastion is ready
+source ./setup-shell-vars.sh
+# set prompt to help developers
+kubectl exec -it $MASTER -- su - postgres -c "echo \"\\set PROMPT1 '%n@%/%R%# '\" > .psqlrc"
+
+echo "done! to connect:"
+echo " - easy: source ./setup-shell-vars.sh; kyrix-psql"
+echo " - manually: psql -h $BASTION_IP -U $USERNAME $DBNAME"
+echo "note: password required"
